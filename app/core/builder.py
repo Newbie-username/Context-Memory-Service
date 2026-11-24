@@ -1,6 +1,6 @@
 import json
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -44,7 +44,7 @@ class ContextItem:
 
 def knowledge_items(items: list[Evidence], identity: Identity):
     now = datetime.now(UTC)
-    scopes = identity.scopes | {f"user:{identity.sub}"}
+    scopes = identity.visible_scopes
     eligible = defaultdict(list)
     excluded = []
     unauthorized_count = 0
@@ -194,6 +194,8 @@ class ContextBuilder:
         conflicts: list[Conflict],
         unauthorized_count: int,
         warnings: list[str],
+        *,
+        memory: Sequence[ContextItem] = (),
     ) -> tuple[BuildResponse, Manifest]:
         selected = [item for item in knowledge if item.required]
         if self.input_size(selected) > self.fixed + self.budget:
@@ -224,6 +226,7 @@ class ContextBuilder:
             (items, weight)
             for items, weight in (
                 (knowledge, self.profile.knowledge_weight),
+                (memory, self.profile.memory_weight),
                 (history, self.profile.history_weight),
             )
             if items

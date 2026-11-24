@@ -9,7 +9,7 @@ from app.core.auth import Identity
 from app.core.contracts import EventRequest, Manifest, SessionRequest, Source
 from app.core.errors import ServiceError, denied
 
-SCHEMA_VERSION = "0001_m1"
+SCHEMA_VERSION = "0002_m2"
 
 _RUNTIME_ROLE_CHECK = """
     SELECT rolsuper OR rolbypassrls OR EXISTS (
@@ -17,7 +17,8 @@ _RUNTIME_ROLE_CHECK = """
         WHERE n.nspname = 'public'
           AND c.relname IN (
               'tenants', 'policy_versions', 'sessions',
-              'session_events', 'context_builds', 'audit_events'
+              'session_events', 'context_builds', 'audit_events', 'memory_entries',
+              'memory_versions', 'memory_evidence', 'memory_embeddings', 'memory_outbox'
           )
           AND pg_has_role(c.relowner, 'MEMBER')
     ) FROM pg_roles WHERE rolname = current_user
@@ -74,7 +75,7 @@ def require_tenant(conn: Connection, identity: Identity) -> None:
         raise denied()
 
 
-def _audit(
+def record_audit(
     conn: Connection, identity: Identity, request_id: UUID, action: str, resource: UUID
 ):
     conn.execute(
@@ -123,7 +124,7 @@ def create_session(
         params,
     ).scalar_one_or_none()
     if created is not None:
-        _audit(conn, identity, request_id, "session_created", created)
+        record_audit(conn, identity, request_id, "session_created", created)
         return created
 
     previous = conn.execute(
@@ -206,7 +207,7 @@ def append_event(
     """),
         {**params, "sequence": sequence, "digest": digest},
     )
-    _audit(conn, identity, request_id, "session_event_appended", session_id)
+    record_audit(conn, identity, request_id, "session_event_appended", session_id)
     return sequence
 
 
@@ -239,7 +240,7 @@ def save_manifest(
             "manifest": manifest.model_dump_json(),
         },
     )
-    _audit(conn, identity, request_id, "context_built", manifest.context_id)
+    record_audit(conn, identity, request_id, "context_built", manifest.context_id)
 
 
 def load_manifest(
@@ -269,7 +270,7 @@ def load_manifest(
         session_task(conn, identity, manifest.session_id)
     refs = manifest.references + [entry.item for entry in manifest.excluded]
     refs.extend(ref for conflict in manifest.conflicts for ref in conflict.items)
-    visible_scopes = identity.scopes | {f"user:{identity.sub}"}
+    visible_scopes = identity.visible_scopes
     if any(
         ref.scope not in visible_scopes or ref.source not in permitted_sources
         for ref in refs
@@ -280,5 +281,5 @@ def load_manifest(
         "application",
     }:
         raise denied()
-    _audit(conn, identity, request_id, "manifest_read", context_id)
+    record_audit(conn, identity, request_id, "manifest_read", context_id)
     return manifest

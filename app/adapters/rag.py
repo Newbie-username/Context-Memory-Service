@@ -18,7 +18,7 @@ def search(
                 "tenant_id": identity.tenant_id,
                 "application_id": identity.application_id,
                 "subject": identity.sub,
-                "scopes": sorted(identity.scopes | {f"user:{identity.sub}"}),
+                "scopes": sorted(identity.visible_scopes),
                 "query": query,
             },
         )

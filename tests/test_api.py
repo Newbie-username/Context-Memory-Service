@@ -1,9 +1,7 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime, timedelta
 
 import httpx
-import jwt
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -14,36 +12,6 @@ from app.settings import Settings
 
 pytestmark = pytest.mark.postgres
 PREFIX = "/api/v1"
-
-
-@pytest.fixture
-def headers(signing_key):
-    key, _ = signing_key
-
-    def make(**changes):
-        tenant = changes.get("tenant_id", "alpha")
-        return {
-            "Authorization": "Bearer "
-            + jwt.encode(
-                {
-                    "iss": "test-issuer",
-                    "aud": "context-service",
-                    "sub": "alice",
-                    "iat": datetime.now(UTC),
-                    "exp": datetime.now(UTC) + timedelta(minutes=10),
-                    "tenant_id": tenant,
-                    "application_id": "it",
-                    "scopes": [f"tenant:{tenant}"],
-                    "permissions": ["sessions:write", "context:build", "context:audit"],
-                    **changes,
-                },
-                key,
-                algorithm="RS256",
-            ),
-            "Idempotency-Key": "test-" + str(datetime.now(UTC).timestamp()),
-        }
-
-    return make
 
 
 @pytest.fixture

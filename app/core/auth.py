@@ -8,15 +8,26 @@ from pydantic import BaseModel, Field, ValidationError
 from app.core.contracts import Identifier, Scope
 from app.core.errors import ServiceError, denied
 
-Permission = Literal["sessions:write", "context:build", "context:audit"]
+Permission = Literal[
+    "sessions:write",
+    "context:build",
+    "context:audit",
+    "memory:propose",
+    "memory:read",
+    "memory:review",
+]
 
 
 class Identity(BaseModel):
     sub: Identifier
     tenant_id: Identifier
     application_id: Identifier
-    permissions: frozenset[Permission] = Field(max_length=3)
+    permissions: frozenset[Permission] = Field(max_length=6)
     scopes: frozenset[Scope] = Field(max_length=100)
+
+    @property
+    def visible_scopes(self) -> frozenset[str]:
+        return self.scopes | {f"user:{self.sub}"}
 
     def require(
         self, permission: Permission, application_id: str | None = None

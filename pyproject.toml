@@ -4,6 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "alembic>=1.14,<2",
+    "dramatiq[redis]>=1.17,<3",
     "fastapi>=0.115,<1",
     "httpx>=0.28,<1",
     "opentelemetry-exporter-otlp-proto-http>=1.30,<2",

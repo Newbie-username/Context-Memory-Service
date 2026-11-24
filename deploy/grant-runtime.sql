@@ -2,3 +2,7 @@ GRANT SELECT ON tenants, policy_versions, alembic_version TO :"runtime_role";
 GRANT SELECT, INSERT ON sessions, session_events, context_builds TO :"runtime_role";
 GRANT UPDATE (next_sequence) ON sessions TO :"runtime_role";
 GRANT INSERT ON audit_events TO :"runtime_role";
+GRANT SELECT, INSERT ON memory_entries, memory_versions, memory_evidence, memory_outbox TO :"runtime_role";
+GRANT UPDATE (status, version) ON memory_entries TO :"runtime_role";
+GRANT UPDATE (dispatched_at, completed_at) ON memory_outbox TO :"runtime_role";
+GRANT SELECT, INSERT, DELETE ON memory_embeddings TO :"runtime_role";

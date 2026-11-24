@@ -20,7 +20,9 @@ from prometheus_client import (
 from sqlalchemy.exc import SQLAlchemyError
 from starlette.exceptions import HTTPException
 
+from app.adapters.memory_provider import PostgresMemory
 from app.adapters.postgres import connect_database
+from app.api.memories import router as memory_router
 from app.api.routes import router
 from app.core.auth import DelegationVerifier
 from app.core.builder import model_counter
@@ -61,6 +63,7 @@ def create_app(
 
     app = FastAPI(title="Context & Memory Service", version="0.1.0", lifespan=lifespan)
     app.include_router(router)
+    app.include_router(memory_router)
     state = app.state
     state.settings = settings
     state.rag_token = (
@@ -70,6 +73,7 @@ def create_app(
         timeout=settings.rag_timeout_seconds, follow_redirects=False, trust_env=False
     )
     state.db = db
+    state.memory = PostgresMemory(db, state.rag, settings.embedding)
     state.verifier = verifier
     state.counters = counters
     state.tracer = provider.get_tracer(__name__)

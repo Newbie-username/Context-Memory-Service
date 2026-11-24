@@ -1,8 +1,10 @@
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
+import jwt
 import pytest
 from alembic import command
 from alembic.config import Config
@@ -85,3 +87,33 @@ def database():
             admin.execute(text(f"DROP DATABASE {name} WITH (FORCE)"))
             admin.execute(text(f"DROP ROLE {role}"))
         cluster.dispose()
+
+
+@pytest.fixture
+def headers(signing_key):
+    key, _ = signing_key
+
+    def make(**changes):
+        tenant = changes.get("tenant_id", "alpha")
+        return {
+            "Authorization": "Bearer "
+            + jwt.encode(
+                {
+                    "iss": "test-issuer",
+                    "aud": "context-service",
+                    "sub": "alice",
+                    "iat": datetime.now(UTC),
+                    "exp": datetime.now(UTC) + timedelta(minutes=10),
+                    "tenant_id": tenant,
+                    "application_id": "it",
+                    "scopes": [f"tenant:{tenant}"],
+                    "permissions": ["sessions:write", "context:build", "context:audit"],
+                    **changes,
+                },
+                key,
+                algorithm="RS256",
+            ),
+            "Idempotency-Key": "test-" + uuid4().hex,
+        }
+
+    return make

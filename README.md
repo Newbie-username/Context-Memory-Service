@@ -5,13 +5,17 @@
 
 当前提供知识问答和普通对话的上下文构建、版本化规则、会话事件、预算和审计清单。业务应用接收模型消息后调用自己的推理服务。[开发计划](docs/development-plan.md) · [接口和联调说明](docs/m1-integration.md)
 
+## M2 受控长期记忆
+
+支持带证据的候选提交、独立审核、跨会话检索、版本审计和撤销。启用嵌入服务后可通过 Redis 和 Dramatiq 异步更新 pgvector 投影。[记忆接口、升级与 Worker 说明](docs/m2-memory.md)
+
 ## 本地启动
 
 使用 Python 3.11 或更新版本、uv 和 Docker Compose。以下配置用于回环地址上的本地开发。
 
 ```bash
 uv sync --locked
-docker compose up -d --wait postgres
+docker compose up -d --wait postgres redis
 cp .env.example .env
 CONTEXT_MIGRATION_DATABASE_URL=postgresql+psycopg://postgres:local-migrate@127.0.0.1:55432/context \
   uv run alembic upgrade head
@@ -46,6 +50,7 @@ curl --fail-with-body http://127.0.0.1:8000/api/v1/context/build \
 uv run ruff check .
 uv run ruff format --check .
 CONTEXT_TEST_ADMIN_DATABASE_URL=postgresql+psycopg://postgres:local-migrate@127.0.0.1:55432/postgres \
+  CONTEXT_TEST_REDIS_URL=redis://127.0.0.1:56379/0 \
   uv run pytest
 ```
 

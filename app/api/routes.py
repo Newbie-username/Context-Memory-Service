@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.adapters import postgres, rag
+from app.adapters import memory_store, postgres, rag
 from app.core.auth import Identity
 from app.core.builder import (
     ContextBuilder,
@@ -25,6 +25,7 @@ from app.core.contracts import (
     SessionResponse,
 )
 from app.core.errors import ServiceError, denied
+from app.core.memory import MemoryProvider
 from app.core.policy import effective_policy
 
 router = APIRouter(
@@ -125,7 +126,7 @@ def manifest(request: Request, context_id: UUID, identity: Caller) -> Manifest:
             conn,
             identity.tenant_id,
             identity.application_id,
-            identity.scopes | {f"user:{identity.sub}"},
+            identity.visible_scopes,
         )
         return postgres.load_manifest(
             conn, identity, context_id, policy.sources, request.state.request_id
@@ -152,7 +153,10 @@ def build(request: Request, payload: BuildRequest, identity: Caller) -> BuildRes
     )
     if required and not use_knowledge:
         raise ServiceError(424, "EVIDENCE_UNAVAILABLE", reason="knowledge_required")
-    scopes = identity.scopes | {f"user:{identity.sub}"}
+    scopes = identity.visible_scopes
+    use_memory = payload.include_memory and config.memory_enabled
+    if use_memory:
+        identity.require("memory:read")
     history = []
     with postgres.tenant_transaction(state.db, identity.tenant_id) as conn:
         postgres.require_tenant(conn, identity)
@@ -186,7 +190,9 @@ def build(request: Request, payload: BuildRequest, identity: Caller) -> BuildRes
                 ]
 
     items = []
-    warnings = ["MEMORY_NOT_ENABLED"] if payload.include_memory else []
+    warnings = (
+        ["MEMORY_NOT_ENABLED"] if payload.include_memory and not use_memory else []
+    )
     if use_knowledge:
         started = perf_counter()
         with state.tracer.start_as_current_span(
@@ -227,8 +233,32 @@ def build(request: Request, payload: BuildRequest, identity: Caller) -> BuildRes
         and not required
     ):
         warnings.append("EVIDENCE_UNAVAILABLE")
+    memory_hits = []
+    if use_memory:
+        provider: MemoryProvider = state.memory
+        recall = provider.search(identity, payload.query, 8)
+        memory_hits = recall.items
+        warnings.extend(recall.warnings)
     response, record = builder.build(
-        knowledge, history, required, excluded, conflicts, unauthorized, warnings
+        knowledge,
+        history,
+        required,
+        excluded,
+        conflicts,
+        unauthorized,
+        warnings,
+        memory=[
+            ContextItem(
+                ItemRef(
+                    source="memory",
+                    source_id=str(hit.memory_id),
+                    version=hit.version,
+                    scope=hit.scope,
+                ),
+                hit.content,
+            )
+            for hit in memory_hits
+        ],
     )
     with postgres.tenant_transaction(state.db, identity.tenant_id) as conn:
         postgres.require_tenant(conn, identity)
@@ -239,6 +269,7 @@ def build(request: Request, payload: BuildRequest, identity: Caller) -> BuildRes
             raise ServiceError(409, "POLICY_CHANGED")
         if payload.session_id is not None:
             postgres.session_task(conn, identity, payload.session_id)
+        memory_store.require_current(conn, identity, memory_hits)
         postgres.save_manifest(conn, identity, record, request.state.request_id)
     state.input_tokens.labels(response.usage.counter).observe(response.usage.input)
     state.builds.labels(response.status).inc()

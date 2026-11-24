@@ -8,6 +8,32 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.core.contracts import Contract, Identifier, TaskType
 
 
+def internal_url(value: str) -> str:
+    url = urlsplit(value)
+    if (
+        not url.hostname
+        or url.username is not None
+        or url.fragment
+        or url.scheme not in ("http", "https")
+        or (
+            url.scheme == "http"
+            and url.hostname not in ("127.0.0.1", "::1", "localhost")
+        )
+    ):
+        raise ValueError("dependency URL must use HTTPS or loopback HTTP")
+    return value
+
+
+class EmbeddingProfile(Contract):
+    url: str
+    model_version: Identifier
+    dimensions: int = Field(ge=1, le=2000)
+    token: SecretStr | None = None
+    timeout_seconds: float = Field(default=1.5, gt=0, le=30)
+
+    validate_url = field_validator("url")(internal_url)
+
+
 class ModelProfile(Contract):
     model_id: Identifier
     window: int = Field(gt=0)
@@ -18,6 +44,7 @@ class ModelProfile(Contract):
     fixed_tools: list[dict] = Field(default_factory=list, max_length=32)
     knowledge_weight: int = Field(default=45, gt=0)
     history_weight: int = Field(default=15, gt=0)
+    memory_weight: int = Field(default=20, gt=0)
 
     @model_validator(mode="after")
     def validate_window(self):
@@ -30,6 +57,7 @@ class Application(Contract):
     tenants: frozenset[Identifier] = Field(min_length=1)
     routes: frozenset[TaskType] = Field(min_length=1)
     model: ModelProfile
+    memory_enabled: bool = False
 
 
 class Settings(BaseSettings):
@@ -44,22 +72,10 @@ class Settings(BaseSettings):
     rag_token: SecretStr | None = None
     rag_timeout_seconds: float = Field(default=1.5, gt=0, le=30)
     otlp_endpoint: str | None = None
+    embedding: EmbeddingProfile | None = None
+    redis_url: SecretStr | None = None
 
     @field_validator("rag_url")
     @classmethod
     def validate_rag_url(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        url = urlsplit(value)
-        if (
-            not url.hostname
-            or url.username is not None
-            or url.fragment
-            or url.scheme not in ("http", "https")
-            or (
-                url.scheme == "http"
-                and url.hostname not in ("127.0.0.1", "::1", "localhost")
-            )
-        ):
-            raise ValueError("RAG must use HTTPS or loopback HTTP")
-        return value
+        return internal_url(value) if value is not None else None
