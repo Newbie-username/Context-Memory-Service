@@ -1,5 +1,6 @@
 import os
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
@@ -15,6 +16,11 @@ from sqlalchemy.engine import make_url
 
 
 @pytest.fixture(scope="session")
+def legacy_session():
+    return "00000000-0000-4000-8000-000000000003"
+
+
+@pytest.fixture(scope="session")
 def signing_key(tmp_path_factory):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public_file = tmp_path_factory.mktemp("jwt") / "key.pub"
@@ -27,7 +33,7 @@ def signing_key(tmp_path_factory):
 
 
 @pytest.fixture(scope="session")
-def database():
+def database(legacy_session):
     admin_url = os.getenv("CONTEXT_TEST_ADMIN_DATABASE_URL")
     if not admin_url:
         pytest.skip(
@@ -59,7 +65,36 @@ def database():
                 ),
             },
         ):
-            command.upgrade(Config("alembic.ini"), "head")
+            config = Config("alembic.ini")
+            command.upgrade(config, "0002_m2")
+            with engine.begin() as conn:
+                conn.execute(
+                    text("INSERT INTO tenants (tenant_id) VALUES ('alpha'), ('beta')")
+                )
+                payload = '{"kind":"tool_result","content":"Legacy receipt unavailable","evidence_refs":[]}'
+                conn.execute(
+                    text("""
+                    INSERT INTO sessions
+                        (tenant_id, session_id, application_id, owner_id, task_id,
+                         idempotency_key, request_digest, next_sequence)
+                    VALUES ('alpha', :session, 'it', 'alice', 'legacy-task',
+                            'legacy-session', 'legacy', 2)
+                """),
+                    {"session": legacy_session},
+                )
+                conn.execute(
+                    text("""
+                    INSERT INTO session_events
+                        (tenant_id, session_id, sequence, idempotency_key, request_digest, payload)
+                    VALUES ('alpha', :session, 1, 'legacy-event', :digest, CAST(:payload AS jsonb))
+                """),
+                    {
+                        "session": legacy_session,
+                        "digest": sha256(payload.encode()).hexdigest(),
+                        "payload": payload,
+                    },
+                )
+            command.upgrade(config, "head")
         with engine.begin() as conn:
             grant = (
                 Path("deploy/grant-runtime.sql")
@@ -69,9 +104,6 @@ def database():
             for statement in grant.split(";"):
                 if statement.strip():
                     conn.execute(text(statement))
-            conn.execute(
-                text("INSERT INTO tenants (tenant_id) VALUES ('alpha'), ('beta')")
-            )
             conn.execute(
                 text("""
                 INSERT INTO policy_versions (tenant_id, application_id, version, rules)

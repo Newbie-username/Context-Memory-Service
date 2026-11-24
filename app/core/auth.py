@@ -15,6 +15,7 @@ Permission = Literal[
     "memory:propose",
     "memory:read",
     "memory:review",
+    "tasks:write",
 ]
 
 
@@ -22,7 +23,7 @@ class Identity(BaseModel):
     sub: Identifier
     tenant_id: Identifier
     application_id: Identifier
-    permissions: frozenset[Permission] = Field(max_length=6)
+    permissions: frozenset[Permission] = Field(max_length=7)
     scopes: frozenset[Scope] = Field(max_length=100)
 
     @property

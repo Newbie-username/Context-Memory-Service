@@ -1,7 +1,14 @@
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    model_validator,
+)
 
 Identifier = Annotated[
     str, StringConstraints(pattern=r"^[A-Za-z0-9_.@-]{1,128}$", strip_whitespace=False)
@@ -12,9 +19,22 @@ Scope = Annotated[
         pattern=r"^(tenant|user|team|project|device|task):[A-Za-z0-9_.@-]{1,128}$"
     ),
 ]
-TaskType = Literal["knowledge_qa", "general_chat"]
+TaskType = Literal["knowledge_qa", "general_chat", "task_resume"]
+TaskStatus = Literal[
+    "created",
+    "active",
+    "waiting_external",
+    "resumed",
+    "completed",
+    "failed",
+    "cancelled",
+]
 Source = Literal["knowledge", "history", "memory"]
 LongText = Annotated[str, StringConstraints(min_length=1, max_length=32_768)]
+TaskText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=2048)
+]
+Cursor = Annotated[int, Field(ge=0, le=2**63 - 1)]
 
 
 class Contract(BaseModel):
@@ -30,14 +50,99 @@ class SessionResponse(Contract):
     session_id: UUID
 
 
+class TaskUpdate(Contract):
+    expected_version: Cursor
+    status: TaskStatus | None = None
+    goal: TaskText | None = None
+    confirmed_facts: dict[Identifier, TaskText] | None = Field(
+        default=None, max_length=64
+    )
+    assumptions: list[TaskText] | None = Field(default=None, max_length=32)
+    constraints: list[TaskText] | None = Field(default=None, max_length=32)
+    pending_steps: list[TaskText] | None = Field(default=None, max_length=32)
+
+
+class ToolResult(Contract):
+    expected_version: Cursor
+    operation_id: Identifier
+    outcome: Literal["unknown", "succeeded", "failed"]
+    receipt: Identifier | None = None
+    error_code: Identifier | None = None
+    reproducible: bool = False
+    security_evidence: bool = False
+
+    @model_validator(mode="after")
+    def validate_receipt(self):
+        if (self.outcome == "unknown") != (self.receipt is None):
+            raise ValueError("confirmed tool outcomes require a receipt")
+        return self
+
+
 class EventRequest(Contract):
-    kind: Literal["user_message", "assistant_message", "tool_result"]
+    kind: Literal["user_message", "assistant_message", "tool_result", "task_update"]
     content: LongText
     evidence_refs: list[Identifier] = Field(default_factory=list, max_length=32)
+    task_update: TaskUpdate | None = None
+    operation: ToolResult | None = None
+
+    @model_validator(mode="after")
+    def validate_event_type(self):
+        if (self.kind == "task_update") != (self.task_update is not None):
+            raise ValueError("task_update requires structured task data")
+        if self.operation is not None and self.kind != "tool_result":
+            raise ValueError("operation is valid for tool_result")
+        if (
+            self.operation is not None
+            and self.operation.reproducible
+            and not self.evidence_refs
+        ):
+            raise ValueError("reproducible results require a retrieval reference")
+        if (
+            self.task_update is not None
+            and self.task_update.confirmed_facts
+            and not self.evidence_refs
+        ):
+            raise ValueError("confirmed facts require evidence references")
+        return self
 
 
 class EventResponse(Contract):
     sequence: int
+    task_version: Cursor | None = None
+
+
+class TaskHead(Contract):
+    stream_id: UUID
+    task_id: Identifier
+    status: TaskStatus
+    version: Cursor
+
+
+class CompactRequest(Contract):
+    expected_version: Cursor
+
+
+class SnapshotReceipt(Contract):
+    snapshot_id: UUID
+    stream_id: UUID
+    through_sequence: Cursor
+
+
+class RestoreRequest(Contract):
+    query: LongText = "继续当前任务"
+    expected_version: Cursor | None = None
+    include_knowledge: bool = False
+    include_memory: bool = False
+    output_tokens: int | None = Field(default=None, gt=0)
+
+
+class TaskRestoration(Contract):
+    task: TaskHead
+    snapshot: SnapshotReceipt | None
+    replayed_events: int
+    unconfirmed_operations: list[Identifier]
+    unclassified_tool_results: int
+    reconciliation_required: bool
 
 
 class BuildRequest(Contract):
@@ -117,6 +222,7 @@ class Manifest(Contract):
     conflicts: list[Conflict]
     warnings: list[str]
     usage: TokenUsage
+    restoration: TaskRestoration | None = None
 
 
 class BuildResponse(Contract):
@@ -126,6 +232,7 @@ class BuildResponse(Contract):
     tools: list[dict]
     warnings: list[str]
     usage: TokenUsage
+    restoration: TaskRestoration | None = None
 
 
 class ErrorResponse(Contract):

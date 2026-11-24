@@ -1,3 +1,4 @@
+import argparse
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -8,6 +9,13 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--task-id")
+    args = parser.parse_args()
+    scopes = ["tenant:demo"]
+    if args.task_id:
+        scopes.append(f"task:{args.task_id}")
+
     directory = Path(".local")
     directory.mkdir(mode=0o700, exist_ok=True)
     private_key = directory / "delegation.pem"
@@ -50,8 +58,9 @@ def main() -> None:
                     "context:audit",
                     "memory:read",
                     "memory:propose",
+                    "tasks:write",
                 ],
-                "scopes": ["tenant:demo"],
+                "scopes": scopes,
             },
             key,
             algorithm="RS256",

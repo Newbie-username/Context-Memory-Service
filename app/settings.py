@@ -74,8 +74,11 @@ class Settings(BaseSettings):
     otlp_endpoint: str | None = None
     embedding: EmbeddingProfile | None = None
     redis_url: SecretStr | None = None
+    summary_url: str | None = None
+    summary_token: SecretStr | None = None
+    summary_timeout_seconds: float = Field(default=2, gt=0, le=30)
 
-    @field_validator("rag_url")
+    @field_validator("rag_url", "summary_url")
     @classmethod
     def validate_rag_url(cls, value: str | None) -> str | None:
         return internal_url(value) if value is not None else None

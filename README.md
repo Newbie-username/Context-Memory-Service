@@ -9,6 +9,10 @@
 
 支持带证据的候选提交、独立审核、跨会话检索、版本审计和撤销。启用嵌入服务后可通过 Redis 和 Dramatiq 异步更新 pgvector 投影。[记忆接口、升级与 Worker 说明](docs/m2-memory.md)
 
+## M3 任务恢复
+
+支持跨会话任务流、结构化进度和操作回执、可校验的压缩快照及断点恢复。[任务接口与升级说明](docs/m3-task-recovery.md)
+
 ## 本地启动
 
 使用 Python 3.11 或更新版本、uv 和 Docker Compose。以下配置用于回环地址上的本地开发。

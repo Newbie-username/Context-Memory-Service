@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-from app.adapters import memory_store, postgres, rag
+from app.adapters import memory_store, postgres, rag, task_runtime, task_store
 from app.core.auth import Identity
 from app.core.builder import (
     ContextBuilder,
@@ -97,6 +97,7 @@ def create_session(
 @router.post(
     "/sessions/{session_id}/events",
     status_code=status.HTTP_201_CREATED,
+    response_model_exclude_none=True,
     responses={
         409: {"model": ErrorResponse},
     },
@@ -111,10 +112,10 @@ def append_event(
     identity.require("sessions:write")
     with postgres.tenant_transaction(request.app.state.db, identity.tenant_id) as conn:
         postgres.require_tenant(conn, identity)
-        sequence = postgres.append_event(
+        result = postgres.append_event(
             conn, identity, session_id, payload, key, request.state.request_id
         )
-    return EventResponse(sequence=sequence)
+    return result
 
 
 @router.get("/context/{context_id}/manifest")
@@ -135,6 +136,7 @@ def manifest(request: Request, context_id: UUID, identity: Caller) -> Manifest:
 
 @router.post(
     "/context/build",
+    response_model_exclude_none=True,
     responses={
         409: {"model": ErrorResponse},
         424: {"model": ErrorResponse},
@@ -142,6 +144,15 @@ def manifest(request: Request, context_id: UUID, identity: Caller) -> Manifest:
     },
 )
 def build(request: Request, payload: BuildRequest, identity: Caller) -> BuildResponse:
+    return build_context(request, payload, identity)
+
+
+def build_context(
+    request: Request,
+    payload: BuildRequest,
+    identity: Identity,
+    expected_task_version: int | None = None,
+) -> BuildResponse:
     identity.require("context:build", payload.application_id)
     state = request.app.state
     config = state.settings.applications[identity.application_id]
@@ -158,6 +169,7 @@ def build(request: Request, payload: BuildRequest, identity: Caller) -> BuildRes
     if use_memory:
         identity.require("memory:read")
     history = []
+    recovery = None
     with postgres.tenant_transaction(state.db, identity.tenant_id) as conn:
         postgres.require_tenant(conn, identity)
         policy = effective_policy(
@@ -170,7 +182,15 @@ def build(request: Request, payload: BuildRequest, identity: Caller) -> BuildRes
         builder = ContextBuilder(
             payload, policy, config.model, state.counters[identity.application_id]
         )
-        if payload.session_id is not None:
+        if payload.task_type == "task_resume":
+            if payload.session_id is None:
+                raise ServiceError(422, "TASK_SESSION_REQUIRED")
+            if not payload.include_history:
+                raise ServiceError(422, "TASK_HISTORY_REQUIRED")
+            task_runtime.require_history(policy)
+            task_id = task_runtime.task_id_for(conn, identity, payload.session_id)
+            recovery = task_store.load(conn, identity, task_id, expected_task_version)
+        elif payload.session_id is not None:
             task = postgres.session_task(conn, identity, payload.session_id)
             if payload.include_history and "history" in policy.sources:
                 scope = f"task:{task}" if task is not None else f"user:{identity.sub}"
@@ -193,6 +213,31 @@ def build(request: Request, payload: BuildRequest, identity: Caller) -> BuildRes
     warnings = (
         ["MEMORY_NOT_ENABLED"] if payload.include_memory and not use_memory else []
     )
+    if recovery is not None:
+        metadata = recovery.metadata()
+        task_data = recovery.state.model_dump(mode="json")
+        if (
+            metadata.replayed_events
+            and "tasks:write" in identity.permissions
+            and builder.should_compact(task_data)
+        ):
+            try:
+                recovery = task_runtime.compact_task(
+                    request, identity, payload.session_id, recovery, policy
+                )
+            except ServiceError as exc:
+                if exc.code not in (
+                    "SNAPSHOT_VALIDATION_FAILED",
+                    "DEPENDENCY_TIMEOUT",
+                    "EVIDENCE_UNAVAILABLE",
+                ):
+                    raise
+                warnings.append(exc.code)
+            metadata = recovery.metadata()
+            task_data = recovery.state.model_dump(mode="json")
+        if metadata.reconciliation_required:
+            warnings.append("TASK_RECONCILIATION_REQUIRED")
+        builder.attach_task(task_data, metadata)
     if use_knowledge:
         started = perf_counter()
         with state.tracer.start_as_current_span(
@@ -269,6 +314,8 @@ def build(request: Request, payload: BuildRequest, identity: Caller) -> BuildRes
             raise ServiceError(409, "POLICY_CHANGED")
         if payload.session_id is not None:
             postgres.session_task(conn, identity, payload.session_id)
+        if recovery is not None:
+            task_store.verify_head(conn, identity, recovery.task)
         memory_store.require_current(conn, identity, memory_hits)
         postgres.save_manifest(conn, identity, record, request.state.request_id)
     state.input_tokens.labels(response.usage.counter).observe(response.usage.input)

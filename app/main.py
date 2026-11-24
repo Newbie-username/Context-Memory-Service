@@ -24,6 +24,7 @@ from app.adapters.memory_provider import PostgresMemory
 from app.adapters.postgres import connect_database
 from app.api.memories import router as memory_router
 from app.api.routes import router
+from app.api.tasks import router as task_router
 from app.core.auth import DelegationVerifier
 from app.core.builder import model_counter
 from app.core.errors import ServiceError
@@ -64,6 +65,7 @@ def create_app(
     app = FastAPI(title="Context & Memory Service", version="0.1.0", lifespan=lifespan)
     app.include_router(router)
     app.include_router(memory_router)
+    app.include_router(task_router)
     state = app.state
     state.settings = settings
     state.rag_token = (

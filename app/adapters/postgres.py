@@ -5,11 +5,18 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import Connection, Engine, create_engine, event, text
 
+from app.adapters import task_store
 from app.core.auth import Identity
-from app.core.contracts import EventRequest, Manifest, SessionRequest, Source
+from app.core.contracts import (
+    EventRequest,
+    EventResponse,
+    Manifest,
+    SessionRequest,
+    Source,
+)
 from app.core.errors import ServiceError, denied
 
-SCHEMA_VERSION = "0002_m2"
+SCHEMA_VERSION = "0003_m3"
 
 _RUNTIME_ROLE_CHECK = """
     SELECT rolsuper OR rolbypassrls OR EXISTS (
@@ -18,7 +25,8 @@ _RUNTIME_ROLE_CHECK = """
           AND c.relname IN (
               'tenants', 'policy_versions', 'sessions',
               'session_events', 'context_builds', 'audit_events', 'memory_entries',
-              'memory_versions', 'memory_evidence', 'memory_embeddings', 'memory_outbox'
+              'memory_versions', 'memory_evidence', 'memory_embeddings', 'memory_outbox',
+              'tasks', 'task_events', 'task_snapshots'
           )
           AND pg_has_role(c.relowner, 'MEMBER')
     ) FROM pg_roles WHERE rolname = current_user
@@ -124,6 +132,8 @@ def create_session(
         params,
     ).scalar_one_or_none()
     if created is not None:
+        if payload.task_id is not None:
+            task_store.ensure_stream(conn, identity, payload.task_id)
         record_audit(conn, identity, request_id, "session_created", created)
         return created
 
@@ -171,13 +181,17 @@ def append_event(
     payload: EventRequest,
     key: str,
     request_id: UUID,
-) -> int:
-    session_task(conn, identity, session_id, lock=True)
+) -> EventResponse:
+    task_id = session_task(conn, identity, session_id, lock=True)
+    if payload.task_update is not None or payload.operation is not None:
+        if task_id is None:
+            raise ServiceError(422, "TASK_SESSION_REQUIRED")
+        identity.require("tasks:write")
     params = {
         "tenant": identity.tenant_id,
         "session": session_id,
         "key": key,
-        "payload": payload.model_dump_json(),
+        "payload": payload.model_dump_json(exclude_none=True),
     }
     digest = sha256(params["payload"].encode()).hexdigest()
     previous = conn.execute(
@@ -190,7 +204,14 @@ def append_event(
     if previous is not None:
         if previous.request_digest != digest:
             raise ServiceError(409, "IDEMPOTENCY_CONFLICT")
-        return previous.sequence
+        task_version = (
+            task_store.original_task_version(
+                conn, identity, session_id, previous.sequence
+            )
+            if task_id is not None
+            else None
+        )
+        return EventResponse(sequence=previous.sequence, task_version=task_version)
 
     sequence = conn.execute(
         text("""
@@ -207,8 +228,15 @@ def append_event(
     """),
         {**params, "sequence": sequence, "digest": digest},
     )
+    task_version = (
+        task_store.append_to_stream(
+            conn, identity, task_id, session_id, sequence, payload
+        )
+        if task_id is not None
+        else None
+    )
     record_audit(conn, identity, request_id, "session_event_appended", session_id)
-    return sequence
+    return EventResponse(sequence=sequence, task_version=task_version)
 
 
 def recent_events(conn: Connection, identity: Identity, session_id: UUID):

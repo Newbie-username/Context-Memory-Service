@@ -6,3 +6,5 @@ GRANT SELECT, INSERT ON memory_entries, memory_versions, memory_evidence, memory
 GRANT UPDATE (status, version) ON memory_entries TO :"runtime_role";
 GRANT UPDATE (dispatched_at, completed_at) ON memory_outbox TO :"runtime_role";
 GRANT SELECT, INSERT, DELETE ON memory_embeddings TO :"runtime_role";
+GRANT SELECT, INSERT ON tasks, task_events, task_snapshots TO :"runtime_role";
+GRANT UPDATE (version, status) ON tasks TO :"runtime_role";
